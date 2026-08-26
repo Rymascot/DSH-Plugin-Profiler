@@ -1,0 +1,9 @@
+# Installed as a profile Bundle through:
+#   dsh plugin --profile <name> add .
+#
+# Do not also insert this row manually into the same profile, otherwise the
+# Loader will reject the duplicate entry id.
+- insert:
+    - id: plugin-profiler
+      name: dsh-plugin-profiler
+
