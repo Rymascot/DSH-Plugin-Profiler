@@ -28,6 +28,7 @@ export interface CordisContextLike {
     listener: (fiber: CordisFiberLike, previousState: unknown) => void,
   ): (() => unknown)
   effect(execute: () => Dispose, label?: string): unknown
+  provide(name: string, value: object): (() => unknown)
 }
 
 export function mapCordisFiberState(value: unknown): LifecycleState {
@@ -79,4 +80,3 @@ export function createCordisLifecycleSource(ctx: CordisContextLike): LifecycleSo
     },
   }
 }
-

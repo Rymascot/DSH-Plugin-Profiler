@@ -1,5 +1,7 @@
 import { createCordisLifecycleSource, type CordisContextLike } from './adapters/cordis-internal.js'
 import { ProfilerCollector } from './core/collector.js'
+import { ProfilerGateway } from './host/gateway.js'
+import { PROFILER_SERVICE } from './typert-descriptor.js'
 
 export type { CordisContextLike } from './adapters/cordis-internal.js'
 export {
@@ -8,32 +10,50 @@ export {
   mapCordisFiberState,
 } from './adapters/cordis-internal.js'
 export * from './core/index.js'
+export { ProfilerGateway } from './host/gateway.js'
+export { parseProfilerSnapshot, profilerSnapshotSchema } from './wire/schema.js'
 
 export const name = 'plugin-profiler'
 
 const collectors = new WeakMap<object, ProfilerCollector>()
+const gateways = new WeakMap<object, ProfilerGateway>()
 
 export function getProfilerCollector(ctx: object): ProfilerCollector | undefined {
   return collectors.get(ctx)
+}
+
+export function getProfilerGateway(ctx: object): ProfilerGateway | undefined {
+  return gateways.get(ctx)
 }
 
 export function apply(ctx: CordisContextLike): void {
   if (typeof ctx.effect !== 'function') {
     throw new TypeError('DSH Plugin Profiler requires a Cordis context with ctx.effect().')
   }
-
-  const collector = new ProfilerCollector(createCordisLifecycleSource(ctx))
-  const stop = collector.start()
-  collectors.set(ctx, collector)
-
-  try {
-    ctx.effect(() => () => {
-      stop()
-      collectors.delete(ctx)
-    }, 'dsh-plugin-profiler: lifecycle collector')
-  } catch (error) {
-    stop()
-    collectors.delete(ctx)
-    throw error
+  if (typeof ctx.provide !== 'function') {
+    throw new TypeError('DSH Plugin Profiler requires a Cordis context with ctx.provide().')
   }
+
+  ctx.effect(() => {
+    const collector = new ProfilerCollector(createCordisLifecycleSource(ctx))
+    const stop = collector.start()
+    const gateway = new ProfilerGateway(collector)
+    let disposeGateway: (() => unknown) | undefined
+
+    try {
+      disposeGateway = ctx.provide(PROFILER_SERVICE, gateway)
+      collectors.set(ctx, collector)
+      gateways.set(ctx, gateway)
+    } catch (error) {
+      stop()
+      throw error
+    }
+
+    return () => {
+      disposeGateway?.()
+      stop()
+      gateways.delete(ctx)
+      collectors.delete(ctx)
+    }
+  }, 'dsh-plugin-profiler: lifecycle collector and Remote gateway')
 }

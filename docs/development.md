@@ -1,7 +1,7 @@
 # Development notes
 
-The first milestone is a Host-side runtime lifecycle collector. It deliberately
-does not expose a Web tab yet.
+The current milestone includes the Host runtime collector, a strict Typert
+Remote snapshot, and a Web settings contribution under Plugins / Performance.
 
 ## What is measured
 
@@ -22,6 +22,10 @@ pnpm install
 pnpm run check
 ```
 
+The build has two faces. TypeScript emits the Host entry, public types, and
+authored Typert artifacts. tsdown emits the DSH browser module-loader bundle;
+React stays a platform external while the strict Zod codec is bundled.
+
 ## Test Profile installation
 
 ```powershell
@@ -32,6 +36,8 @@ dsh plugin --profile web add .
 Restart the Profile after installation. Do not also insert `plugin-profiler`
 manually into that Profile's `cordis.patch.yml`; doing both creates a duplicate
 Loader entry id.
+
+The plugin runs inside DSH and has no standalone process to keep alive.
 
 ## Compatibility boundary
 
