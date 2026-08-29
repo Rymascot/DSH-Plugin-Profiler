@@ -6,7 +6,7 @@ import type { ProfilerSettingsTabProps } from './contracts.js'
 
 type ViewState =
   | { readonly status: 'loading' }
-  | { readonly status: 'error' }
+  | { readonly status: 'error'; readonly message: string }
   | { readonly status: 'ready'; readonly snapshot: ProfilerSnapshot }
 
 const OUTCOME_KEYS = {
@@ -23,7 +23,7 @@ const COMPLETENESS_KEYS = {
   unobserved: 'unobserved',
 } satisfies Record<SegmentCompleteness, ProfilerLocaleKey>
 
-/** Complete activation durations, excluding censored observations. */
+/** 返回完整的激活耗时，不计入被截断的观测值。 */
 export function activationDurations(snapshot: ProfilerSnapshot): number[] {
   return snapshot.samples.flatMap(sample => {
     const segment = sample.segments.activation
@@ -33,7 +33,7 @@ export function activationDurations(snapshot: ProfilerSnapshot): number[] {
   })
 }
 
-/** Linearly interpolated quantile over finite values. */
+/** 使用线性插值计算有限数值的分位数。 */
 export function quantile(values: readonly number[], ratio: number): number | null {
   if (values.length === 0) return null
   const sorted = [...values].sort((left, right) => left - right)
@@ -51,6 +51,17 @@ export function formatDuration(value: number | null): string {
   if (value === null) return '—'
   if (value < 10) return value.toFixed(1) + ' ms'
   return Math.round(value) + ' ms'
+}
+
+/** 将未知异常转换为适合在诊断区域展示的文本。 */
+export function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  try {
+    return JSON.stringify(error) ?? String(error)
+  } catch {
+    return String(error)
+  }
 }
 
 function displayName(sample: ActivationSample): string {
@@ -113,9 +124,9 @@ export function ProfilerSettingsTab({ readSnapshot, t }: ProfilerSettingsTabProp
         setState({ status: 'ready', snapshot })
         setRefreshing(false)
       },
-      () => {
+      error => {
         if (!current) return
-        setState({ status: 'error' })
+        setState({ status: 'error', message: describeError(error) })
         setRefreshing(false)
       },
     )
@@ -164,7 +175,10 @@ export function ProfilerSettingsTab({ readSnapshot, t }: ProfilerSettingsTabProp
       {state.status === 'loading' ? <p className="dpp-status">{t('loading')}</p> : null}
       {state.status === 'error' ? (
         <div className="dpp-failure">
-          <p className="dpp-status" role="alert">{t('error')}</p>
+          <div className="dpp-failure-copy" role="alert">
+            <p className="dpp-status">{t('error')}</p>
+            <code className="dpp-error-detail">{state.message}</code>
+          </div>
           <button className="dpp-button" type="button" onClick={retry}>{t('retry')}</button>
         </div>
       ) : null}

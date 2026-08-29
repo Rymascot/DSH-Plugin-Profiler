@@ -35,7 +35,9 @@ export const PROFILER_STYLES = [
   '.dpp-outcome[data-outcome="active"] { background:color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent); color:var(--dsw-alias-state-success-primary); }',
   '.dpp-outcome[data-outcome="failed"] { background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent); color:var(--dsw-alias-state-error-primary); }',
   '.dpp-status { margin:0; padding:22px 4px; color:var(--dsw-alias-label-tertiary); font-size:13px; line-height:20px; }',
-  '.dpp-failure { display:flex; align-items:center; gap:10px; color:var(--dsw-alias-state-error-primary); }',
-  '.dpp-failure .dpp-status { color:inherit; }',
+  '.dpp-failure { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; border:1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 30%, transparent); border-radius:10px; padding:12px; background:color-mix(in srgb, var(--dsw-alias-state-error-primary) 6%, transparent); color:var(--dsw-alias-state-error-primary); }',
+  '.dpp-failure-copy { min-width:0; }',
+  '.dpp-failure .dpp-status { padding:0; color:inherit; }',
+  '.dpp-error-detail { display:block; margin-top:4px; color:var(--dsw-alias-label-secondary); font-family:var(--ds-font-family-code); font-size:11px; line-height:17px; overflow-wrap:anywhere; white-space:pre-wrap; }',
   '@media (max-width:760px) { .dpp-hero { flex-direction:column; } .dpp-actions { width:100%; justify-content:space-between; } .dpp-metrics { grid-template-columns:repeat(2, minmax(0, 1fr)); } .dpp-toolbar { align-items:flex-start; flex-direction:column; } .dpp-search { width:100%; } }',
 ].join('\n')

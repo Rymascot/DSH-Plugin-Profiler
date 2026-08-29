@@ -3,12 +3,17 @@ import type { ReactNode } from 'react'
 import { parseProfilerSnapshot } from '../wire/schema.js'
 import TYPERT_REMOTE from '../typert.remote-client.js'
 import { ProfilerSettingsTab } from './ProfilerSettingsTab.js'
-import type { ProfilerClientContext, ProfilerTabInjected } from './contracts.js'
+import type {
+  ProfilerClientContext,
+  ProfilerClientFiber,
+  ProfilerTabInjected,
+} from './contracts.js'
 import { en, zh } from './locales.js'
 import { PROFILER_STYLE_ID, PROFILER_STYLES } from './styles.js'
 
 export type {
   ProfilerClientContext,
+  ProfilerClientFiber,
   ProfilerSettingsTabProps,
   ProfilerTabInjected,
 } from './contracts.js'
@@ -39,9 +44,10 @@ function installStyles(): () => void {
   return () => { element.remove() }
 }
 
-/** Mount the Remote descriptor and contribute the Performance settings tab. */
+/** 挂载 Remote 描述符，并向设置页面注册“性能”页签。 */
 export async function apply(ctx: ProfilerClientContext): Promise<() => Promise<void>> {
   const disposeRemote = await ctx.remote.$mount(TYPERT_REMOTE)
+  let remoteScope: ProfilerClientFiber | undefined
 
   try {
     ctx.effect(installStyles, 'dsh-plugin-profiler: client styles')
@@ -51,30 +57,35 @@ export async function apply(ctx: ProfilerClientContext): Promise<() => Promise<v
     )
 
     const t = ctx.locale.bind(NS)
-    const readSnapshot: ProfilerTabInjected['readSnapshot'] = async () => {
-      const result = await ctx.remote.pluginProfiler.snapshot()
-      if (!result.ok) {
-        throw new Error(
-          'pluginProfiler.snapshot failed: ' + result.error.code + ': ' + result.error.message,
-        )
+    remoteScope = ctx.inject(['remote.pluginProfiler'], (scope) => {
+      const readSnapshot: ProfilerTabInjected['readSnapshot'] = async () => {
+        const result = await scope.remote.pluginProfiler.snapshot()
+        if (!result.ok) {
+          throw new Error(
+            'pluginProfiler.snapshot failed: ' + result.error.code + ': ' + result.error.message,
+          )
+        }
+        return parseProfilerSnapshot(result.value)
       }
-      return parseProfilerSnapshot(result.value)
-    }
 
-    ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
-      name: 'settings.plugins.tab',
-      id: 'performance',
-      order: 20,
-      label: () => t('tab'),
-      locale: NS,
-      inject: () => ({ readSnapshot }),
-    }, ProfilerSettingsTab))
+      scope.slots.inject('settings.plugins.tab', () => scope.slots.register({
+        name: 'settings.plugins.tab',
+        id: 'performance',
+        order: 20,
+        label: () => t('tab'),
+        locale: NS,
+        inject: () => ({ readSnapshot }),
+      }, ProfilerSettingsTab))
+    })
+    await remoteScope.await()
   } catch (error) {
+    await remoteScope?.dispose()
     await disposeRemote()
     throw error
   }
 
   return async () => {
+    await remoteScope?.dispose()
     await disposeRemote()
   }
 }

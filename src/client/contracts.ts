@@ -49,11 +49,21 @@ export interface ProfilerSlots {
   ): unknown
 }
 
+/** Client 子作用域的最小生命周期接口。 */
+export interface ProfilerClientFiber {
+  await(): Promise<ProfilerClientFiber>
+  dispose(): Promise<void>
+}
+
 export interface ProfilerClientContext {
   readonly remote: ProfilerClientRemote
   readonly locale: ProfilerLocale
   readonly slots: ProfilerSlots
   effect(execute: () => unknown, label?: string): unknown
+  inject(
+    dependencies: readonly string[],
+    apply: (scope: ProfilerClientContext) => unknown,
+  ): ProfilerClientFiber
 }
 
 export type ProfilerSettingsTabProps = ProfilerTabInjected & {
