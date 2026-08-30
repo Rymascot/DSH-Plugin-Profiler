@@ -19,8 +19,8 @@ describe('profiler Remote wire contract', () => {
     const snapshot = emptySnapshot()
 
     expect(parseProfilerSnapshot(snapshot)).toEqual(snapshot)
-    expect(() => profilerSnapshotSchema.parse({ ...snapshot, schemaVersion: 1 })).toThrow()
-    expect(() => profilerSnapshotSchema.parse({ ...snapshot, schemaVersion: 3 })).toThrow()
+    expect(() => profilerSnapshotSchema.parse({ ...snapshot, schemaVersion: 2 })).toThrow()
+    expect(() => profilerSnapshotSchema.parse({ ...snapshot, schemaVersion: 4 })).toThrow()
   })
 
   it('publishes matching Host and Client descriptors', () => {

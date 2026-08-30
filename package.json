@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-profiler",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Runtime lifecycle profiler for DeepSeek Harness plugins.",
   "type": "module",
   "main": "./lib/index.js",

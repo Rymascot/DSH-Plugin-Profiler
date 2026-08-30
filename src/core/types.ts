@@ -13,6 +13,45 @@ export interface LifecycleSignal {
   readonly moduleName?: string
   readonly previous: LifecycleState
   readonly current: LifecycleState
+  /** Loader 把这个条目标成了分组容器,它的激活跨度包含全部子条目。 */
+  readonly isGroup?: boolean
+  /** 父条目的 Loader id;根条目没有父条目。 */
+  readonly parentEntryId?: string
+  /** 该条目注入的服务,以及当时提供这些服务的条目。 */
+  readonly dependencies?: readonly DependencyLink[]
+}
+
+/** 一条依赖边:注入的服务名,以及提供它的 Loader 条目。 */
+export interface DependencyLink {
+  readonly service: string
+  readonly providerEntryId?: string
+}
+
+/**
+ * 解除阻塞的那条依赖:最后一个就绪的提供方。
+ *
+ * `skewMs` 是提供方就绪与本条目离开 pending 之间的间隔。归因正确时两者应当几乎
+ * 重合,间隔越大说明真正的阻塞源不在已观测到的依赖里,界面据此弱化展示。
+ */
+export interface BlockingAttribution {
+  readonly service: string
+  readonly entryId: string
+  readonly providerReadyOffsetMs: number
+  readonly skewMs: number
+}
+
+/**
+ * 扣掉子条目之后的自身耗时。
+ *
+ * `exact` 表示所有子条目都有完整区间;`upper-bound` 表示有子条目缺少计时,扣不干净,
+ * 真实自身耗时只会更小;`unobserved` 表示这次激活本身就没测到。
+ */
+export type SelfTimeBasis = 'exact' | 'upper-bound' | 'unobserved'
+
+export interface SelfTime {
+  readonly durationMs: number | null
+  readonly basis: SelfTimeBasis
+  readonly childEntryCount: number
 }
 
 export type SegmentCompleteness =
@@ -57,17 +96,23 @@ export type ActivationOutcome =
   | 'disposed-before-terminal'
 
 export interface ActivationSample {
-  readonly schemaVersion: 2
+  readonly schemaVersion: 3
   readonly runId: string
   readonly entryId: string
   readonly moduleName?: string
   readonly origin: PluginOrigin
   readonly generation: number
+  /** 分组容器,不是插件本身;它的激活跨度包含子条目,排名时应当排除。 */
+  readonly isGroup: boolean
+  readonly parentEntryId?: string
   readonly firstSeenOffsetMs: number
   readonly lastSeenOffsetMs: number
   readonly lastState: LifecycleState
   readonly outcome: ActivationOutcome
   readonly failureStage?: 'pending' | 'loading' | 'unknown'
+  readonly dependencies: readonly DependencyLink[]
+  readonly blockedBy?: BlockingAttribution
+  readonly selfTime: SelfTime
   readonly segments: {
     readonly dependencyWait: SegmentTiming
     readonly activation: SegmentTiming
@@ -97,12 +142,14 @@ export interface ProfilerDiagnostic {
 }
 
 export interface ProfilerSnapshot {
-  readonly schemaVersion: 2
+  readonly schemaVersion: 3
   readonly provenance: ProfileProvenance
   readonly collector: {
     readonly mode: 'host-runtime'
     readonly coverage: 'partial'
     readonly attachedAtMonotonicMs: number
+    /** 从 Profiler 挂载到读取这份快照之间的时长,即本次观测窗口。 */
+    readonly observedUntilOffsetMs: number
     readonly target: {
       readonly dshVersion: string
       readonly dshCommit: string

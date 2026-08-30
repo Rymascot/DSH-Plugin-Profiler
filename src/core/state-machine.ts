@@ -5,6 +5,8 @@ import {
   TARGET_DSH,
   type ActivationOutcome,
   type ActivationSample,
+  type BlockingAttribution,
+  type DependencyLink,
   type DiagnosticCode,
   type LifecycleSignal,
   type LifecycleState,
@@ -12,6 +14,7 @@ import {
   type ProfilerDiagnostic,
   type ProfilerSnapshot,
   type SegmentTiming,
+  type SelfTime,
 } from './types.js'
 
 interface MutableRecord {
@@ -19,6 +22,9 @@ interface MutableRecord {
   readonly entryId: string
   moduleName: string | undefined
   readonly generation: number
+  isGroup: boolean
+  parentEntryId: string | undefined
+  dependencies: readonly DependencyLink[]
   readonly firstSeenOffsetMs: number
   lastSeenOffsetMs: number
   lastState: LifecycleState
@@ -92,17 +98,138 @@ function countDistinctEntriesByOrigin(
   return counts
 }
 
-function serialize(record: MutableRecord, origin: OriginIndex): ActivationSample {
+/** 合并后的区间总长度。子条目可以并发,时长不能直接相加。 */
+function mergedLength(intervals: readonly (readonly [number, number])[]): number {
+  const sorted = [...intervals].sort((left, right) => left[0] - right[0])
+  const first = sorted[0]
+  if (first === undefined) return 0
+
+  let total = 0
+  let start = first[0]
+  let end = first[1]
+  for (const [nextStart, nextEnd] of sorted.slice(1)) {
+    if (nextStart > end) {
+      total += end - start
+      start = nextStart
+      end = nextEnd
+    } else if (nextEnd > end) {
+      end = nextEnd
+    }
+  }
+  return total + (end - start)
+}
+
+/**
+ * 需要看别的条目才能得出的结论。
+ *
+ * 不必等到快照才算:子条目先于父条目结束激活,依赖的提供方也先于被阻塞方就绪,
+ * 所以一条记录终结时,它要用到的那些记录都已经躺在数组里了。
+ */
+class DerivationIndex {
+  readonly #childrenByParent = new Map<string, MutableRecord[]>()
+  readonly #readyOffsetsByEntry = new Map<string, number[]>()
+
+  constructor(records: readonly MutableRecord[]) {
+    for (const record of records) {
+      const parentEntryId = record.parentEntryId
+      if (parentEntryId !== undefined) {
+        const siblings = this.#childrenByParent.get(parentEntryId)
+        if (siblings === undefined) this.#childrenByParent.set(parentEntryId, [record])
+        else siblings.push(record)
+      }
+
+      const readyOffsetMs = record.activation.endOffsetMs
+      if (record.outcome === 'active' && readyOffsetMs !== null) {
+        const offsets = this.#readyOffsetsByEntry.get(record.entryId)
+        if (offsets === undefined) this.#readyOffsetsByEntry.set(record.entryId, [readyOffsetMs])
+        else offsets.push(readyOffsetMs)
+      }
+    }
+  }
+
+  /** 激活耗时减去子条目占用的部分。容器条目的耗时几乎全部来自子条目。 */
+  selfTimeOf(record: MutableRecord): SelfTime {
+    const { startOffsetMs, endOffsetMs, durationMs } = record.activation
+    const children = this.#childrenByParent.get(record.entryId) ?? []
+    if (startOffsetMs === null || endOffsetMs === null || durationMs === null) {
+      return { durationMs: null, basis: 'unobserved', childEntryCount: children.length }
+    }
+
+    const intervals: (readonly [number, number])[] = []
+    let incomplete = false
+    for (const child of children) {
+      const childStart = child.activation.startOffsetMs
+      const childEnd = child.activation.endOffsetMs
+      if (childStart === null || childEnd === null) {
+        // 落在本次激活窗口之外的子条目(例如后来的重载)与这次自身耗时无关。
+        if (child.firstSeenOffsetMs <= endOffsetMs) incomplete = true
+        continue
+      }
+      const start = Math.max(childStart, startOffsetMs)
+      const end = Math.min(childEnd, endOffsetMs)
+      if (end > start) intervals.push([start, end])
+    }
+
+    return {
+      durationMs: Math.max(0, durationMs - mergedLength(intervals)),
+      basis: incomplete ? 'upper-bound' : 'exact',
+      childEntryCount: children.length,
+    }
+  }
+
+  /** 最后一个就绪的依赖,就是把这个条目从 pending 里放出来的那个。 */
+  blockedByOf(record: MutableRecord): BlockingAttribution | undefined {
+    const unblockedAtOffsetMs = record.activation.startOffsetMs
+    if (unblockedAtOffsetMs === null) return undefined
+
+    let latest: BlockingAttribution | undefined
+    for (const link of record.dependencies) {
+      const providerEntryId = link.providerEntryId
+      if (providerEntryId === undefined || providerEntryId === record.entryId) continue
+
+      const providerReadyOffsetMs = this.#readyBefore(providerEntryId, unblockedAtOffsetMs)
+      if (providerReadyOffsetMs === null) continue
+      if (latest !== undefined && providerReadyOffsetMs <= latest.providerReadyOffsetMs) continue
+
+      latest = {
+        service: link.service,
+        entryId: providerEntryId,
+        providerReadyOffsetMs,
+        skewMs: unblockedAtOffsetMs - providerReadyOffsetMs,
+      }
+    }
+    return latest
+  }
+
+  #readyBefore(entryId: string, limitOffsetMs: number): number | null {
+    let best: number | null = null
+    for (const offset of this.#readyOffsetsByEntry.get(entryId) ?? []) {
+      if (offset > limitOffsetMs) continue
+      if (best === null || offset > best) best = offset
+    }
+    return best
+  }
+}
+
+function serialize(
+  record: MutableRecord,
+  origin: OriginIndex,
+  index: DerivationIndex,
+): ActivationSample {
+  const blockedBy = index.blockedByOf(record)
   const base = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     runId: record.runId,
     entryId: record.entryId,
     origin: origin.originOf(record.moduleName),
     generation: record.generation,
+    isGroup: record.isGroup,
     firstSeenOffsetMs: record.firstSeenOffsetMs,
     lastSeenOffsetMs: record.lastSeenOffsetMs,
     lastState: record.lastState,
     outcome: record.outcome,
+    dependencies: record.dependencies.map(link => ({ ...link })),
+    selfTime: index.selfTimeOf(record),
     segments: {
       dependencyWait: { ...record.dependencyWait },
       activation: { ...record.activation },
@@ -113,7 +240,9 @@ function serialize(record: MutableRecord, origin: OriginIndex): ActivationSample
   return {
     ...base,
     ...(record.moduleName === undefined ? {} : { moduleName: record.moduleName }),
+    ...(record.parentEntryId === undefined ? {} : { parentEntryId: record.parentEntryId }),
     ...(record.failureStage === undefined ? {} : { failureStage: record.failureStage }),
+    ...(blockedBy === undefined ? {} : { blockedBy }),
   }
 }
 
@@ -128,7 +257,17 @@ export class ActivationStateMachine {
     this.#origin = origin
   }
 
-  consume(signal: LifecycleSignal, offsetMs: number): ActivationSample | undefined {
+  /**
+   * 消费一次状态转换。
+   *
+   * `reportCompleted` 为 false 时不序列化终结的记录:派生结论要扫一遍全部记录,而
+   * 这段代码跑在 Host 启动的热路径上,没人接收就不该算。快照读取时照样会补上。
+   */
+  consume(
+    signal: LifecycleSignal,
+    offsetMs: number,
+    reportCompleted = true,
+  ): ActivationSample | undefined {
     if (signal.entryId === undefined || signal.entryId.trim() === '') {
       this.recordDiagnostic(
         'missing-entry-id',
@@ -170,6 +309,11 @@ export class ActivationStateMachine {
     if (cursor.record.moduleName === undefined && signal.moduleName !== undefined) {
       cursor.record.moduleName = signal.moduleName
     }
+    if (cursor.record.parentEntryId === undefined && signal.parentEntryId !== undefined) {
+      cursor.record.parentEntryId = signal.parentEntryId
+    }
+    if (signal.isGroup === true) cursor.record.isGroup = true
+    this.#absorbDependencies(cursor.record, signal)
 
     cursor.record.lastSeenOffsetMs = Math.max(cursor.record.lastSeenOffsetMs, offsetMs)
     cursor.record.lastState = signal.current
@@ -181,10 +325,23 @@ export class ActivationStateMachine {
 
     if (cursor.record.outcome !== 'in-progress' && !cursor.record.completionReported) {
       cursor.record.completionReported = true
-      return serialize(cursor.record, this.#origin)
+      if (reportCompleted) {
+        return serialize(cursor.record, this.#origin, new DerivationIndex(this.#records))
+      }
     }
 
     return undefined
+  }
+
+  /**
+   * 依赖表在离开 pending 的那一刻最完整:Cordis 此时刚把提供方快照写进 `fiber.store`,
+   * 卸载时又会清空。所以进入 loading 的采样优先,其余只用来填补空缺。
+   */
+  #absorbDependencies(record: MutableRecord, signal: LifecycleSignal): void {
+    const dependencies = signal.dependencies
+    if (dependencies === undefined || dependencies.length === 0) return
+    if (record.dependencies.length > 0 && signal.current !== 'loading') return
+    record.dependencies = dependencies
   }
 
   recordDiagnostic(
@@ -201,7 +358,7 @@ export class ActivationStateMachine {
     })
   }
 
-  snapshot(attachedAtMonotonicMs: number): ProfilerSnapshot {
+  snapshot(attachedAtMonotonicMs: number, observedUntilOffsetMs: number): ProfilerSnapshot {
     const byCode = Object.fromEntries(
       DIAGNOSTIC_CODES.map(code => [code, 0]),
     ) as Record<DiagnosticCode, number>
@@ -210,10 +367,11 @@ export class ActivationStateMachine {
       byCode[diagnostic.code] += 1
     }
 
-    const samples = this.#records.map(record => serialize(record, this.#origin))
+    const index = new DerivationIndex(this.#records)
+    const samples = this.#records.map(record => serialize(record, this.#origin, index))
 
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       provenance: {
         ...this.#origin.source,
         counts: countDistinctEntriesByOrigin(samples),
@@ -222,6 +380,7 @@ export class ActivationStateMachine {
         mode: 'host-runtime',
         coverage: 'partial',
         attachedAtMonotonicMs,
+        observedUntilOffsetMs,
         target: {
           dshVersion: TARGET_DSH.version,
           dshCommit: TARGET_DSH.commit,
@@ -258,6 +417,9 @@ export class ActivationStateMachine {
       entryId,
       moduleName: signal.moduleName,
       generation,
+      isGroup: signal.isGroup === true,
+      parentEntryId: signal.parentEntryId,
+      dependencies: signal.dependencies ?? [],
       firstSeenOffsetMs: offsetMs,
       lastSeenOffsetMs: offsetMs,
       lastState: signal.current,

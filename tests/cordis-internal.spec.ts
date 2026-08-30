@@ -69,3 +69,82 @@ describe('Cordis internal lifecycle adapter', () => {
     })
   })
 })
+
+/** 把一个假 Fiber 送进适配器,返回它产出的信号。 */
+function emitFiber(fiber: object): Record<string, unknown> {
+  let listener: ((fiber: object, previousState: unknown) => void) | undefined
+  const ctx = {
+    on: (_event: string, callback: typeof listener) => {
+      listener = callback
+      return () => undefined
+    },
+    effect: vi.fn(),
+  } as unknown as CordisContextLike
+  const received = vi.fn()
+
+  createCordisLifecycleSource(ctx).subscribe(received)
+  listener?.(fiber, CORDIS_FIBER_STATE.PENDING)
+
+  return received.mock.calls[0]?.[0] as Record<string, unknown>
+}
+
+describe('Cordis 结构关系与依赖提供方', () => {
+  it('读出父条目,并把注入的服务映射到提供它的条目', () => {
+    const signal = emitFiber({
+      state: CORDIS_FIBER_STATE.LOADING,
+      entry: { id: 'child', options: { name: 'dsh-child', group: false } },
+      parent: { fiber: { entry: { id: 'bundle' } } },
+      inject: { db: {}, log: null },
+      store: { db: { name: 'db', fiber: { entry: { id: 'p1' } } } },
+    })
+
+    expect(signal).toEqual({
+      fiberToken: expect.anything(),
+      entryId: 'child',
+      moduleName: 'dsh-child',
+      parentEntryId: 'bundle',
+      dependencies: [
+        { service: 'db', providerEntryId: 'p1' },
+        // 提供方还没进 store 时只留服务名,不猜。
+        { service: 'log' },
+      ],
+      previous: 'pending',
+      current: 'loading',
+    })
+    expect(signal['isGroup']).toBeUndefined()
+  })
+
+  it('把 Loader 的分组条目标成容器', () => {
+    const signal = emitFiber({
+      state: CORDIS_FIBER_STATE.LOADING,
+      entry: { id: 'bundle', options: { name: '@deepseek-ai/dsh-base', group: true } },
+    })
+
+    expect(signal['isGroup']).toBe(true)
+    expect(signal['dependencies']).toBeUndefined()
+  })
+
+  it('读不到解析后的依赖表时退回条目自己声明的 inject', () => {
+    expect(emitFiber({
+      state: CORDIS_FIBER_STATE.LOADING,
+      entry: { id: 'a', options: { name: 'dsh-a', inject: ['db', ' ', 'log'] } },
+    })['dependencies']).toEqual([{ service: 'db' }, { service: 'log' }])
+
+    expect(emitFiber({
+      state: CORDIS_FIBER_STATE.LOADING,
+      entry: {
+        id: 'b',
+        options: { name: 'dsh-b', inject: { required: ['db'], optional: ['log'] } },
+      },
+    })['dependencies']).toEqual([{ service: 'db' }, { service: 'log' }])
+  })
+
+  it('卸载清空 store 之后仍保留服务名,只是没有提供方', () => {
+    expect(emitFiber({
+      state: CORDIS_FIBER_STATE.DISPOSED,
+      entry: { id: 'a', options: { name: 'dsh-a' } },
+      inject: { db: {} },
+      store: undefined,
+    })['dependencies']).toEqual([{ service: 'db' }])
+  })
+})

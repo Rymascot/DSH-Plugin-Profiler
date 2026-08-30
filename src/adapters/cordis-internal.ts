@@ -1,5 +1,5 @@
 import type { Dispose, LifecycleSource } from '../core/contracts.js'
-import type { LifecycleSignal, LifecycleState } from '../core/types.js'
+import type { DependencyLink, LifecycleSignal, LifecycleState } from '../core/types.js'
 
 export const CORDIS_FIBER_STATE = {
   PENDING: 0,
@@ -14,12 +14,22 @@ interface CordisEntryLike {
   readonly id?: unknown
   readonly options?: {
     readonly name?: unknown
+    /** Loader 用它标记分组容器。 */
+    readonly group?: unknown
+    /** 条目自己声明的依赖;数组或 required/optional 结构。 */
+    readonly inject?: unknown
   }
 }
 
 interface CordisFiberLike {
   readonly state?: unknown
   readonly entry?: CordisEntryLike
+  /** 插件被加载时所在的 Context;它的 `fiber` 就是父条目的 Fiber。 */
+  readonly parent?: { readonly fiber?: CordisFiberLike }
+  /** Cordis 解析后的依赖表:服务名 -> intercept 配置。 */
+  readonly inject?: unknown
+  /** 加载期间所需服务实现的快照;卸载后被清空。 */
+  readonly store?: unknown
 }
 
 export interface CordisContextLike {
@@ -49,6 +59,62 @@ function nonEmptyString(value: unknown): string | undefined {
   return normalized === '' ? undefined : normalized
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function stringItems(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item: unknown) => {
+    const name = nonEmptyString(item)
+    return name === undefined ? [] : [name]
+  })
+}
+
+/**
+ * 这个条目注入的服务名。
+ *
+ * `fiber.inject` 是 Cordis 解析后的依赖表,Loader 可能往里追加过条目,所以它比条目
+ * 自己声明的那份更接近运行时真相;读不到时才退回声明值。
+ */
+export function injectedServiceNames(fiber: CordisFiberLike): string[] {
+  if (isRecord(fiber.inject)) return Object.keys(fiber.inject).filter(name => name.trim() !== '')
+
+  const declared = fiber.entry?.options?.inject
+  if (Array.isArray(declared)) return stringItems(declared)
+  if (isRecord(declared)) {
+    return [...stringItems(declared['required']), ...stringItems(declared['optional'])]
+  }
+  return []
+}
+
+/** 从服务实现快照里取出提供方所属的 Loader 条目。 */
+function providerEntryIdOf(impl: unknown): string | undefined {
+  if (!isRecord(impl)) return undefined
+  const providerFiber = impl['fiber']
+  if (!isRecord(providerFiber)) return undefined
+  const entry = providerFiber['entry']
+  if (!isRecord(entry)) return undefined
+  return nonEmptyString(entry['id'])
+}
+
+/**
+ * 把注入的服务映射到提供它的条目。
+ *
+ * `fiber.store` 在进入 loading 之前一刻被写好、在卸载时被清空,所以这里读到的
+ * 提供方就是当时真正满足依赖的那批 Fiber。
+ */
+export function readDependencies(fiber: CordisFiberLike): DependencyLink[] | undefined {
+  const services = injectedServiceNames(fiber)
+  if (services.length === 0) return undefined
+
+  const store = isRecord(fiber.store) ? fiber.store : undefined
+  return services.map(service => {
+    const providerEntryId = providerEntryIdOf(store?.[service])
+    return providerEntryId === undefined ? { service } : { service, providerEntryId }
+  })
+}
+
 export function createCordisLifecycleSource(ctx: CordisContextLike): LifecycleSource {
   if (typeof ctx.on !== 'function') {
     throw new TypeError('DSH Plugin Profiler requires a Cordis context with ctx.on().')
@@ -62,12 +128,17 @@ export function createCordisLifecycleSource(ctx: CordisContextLike): LifecycleSo
         try {
           const entryId = nonEmptyString(fiber.entry?.id)
           const moduleName = nonEmptyString(fiber.entry?.options?.name)
+          const parentEntryId = nonEmptyString(fiber.parent?.fiber?.entry?.id)
+          const dependencies = readDependencies(fiber)
           const signal: LifecycleSignal = {
             fiberToken: fiber,
             previous: mapCordisFiberState(previousState),
             current: mapCordisFiberState(fiber.state),
             ...(entryId === undefined ? {} : { entryId }),
             ...(moduleName === undefined ? {} : { moduleName }),
+            ...(fiber.entry?.options?.group === true ? { isGroup: true } : {}),
+            ...(parentEntryId === undefined ? {} : { parentEntryId }),
+            ...(dependencies === undefined ? {} : { dependencies }),
           }
           listener(signal)
         } catch {

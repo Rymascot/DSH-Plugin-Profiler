@@ -42,7 +42,11 @@ export class ProfilerCollector {
       if (!this.#active) return
 
       const offsetMs = this.#readOffset()
-      const completedSample = this.#stateMachine.consume(signal, offsetMs)
+      const completedSample = this.#stateMachine.consume(
+        signal,
+        offsetMs,
+        this.#reporter !== undefined,
+      )
       if (completedSample === undefined || this.#reporter === undefined) return
 
       try {
@@ -69,7 +73,14 @@ export class ProfilerCollector {
   }
 
   snapshot(): ProfilerSnapshot {
-    return this.#stateMachine.snapshot(this.#attachedAtMonotonicMs)
+    return this.#stateMachine.snapshot(this.#attachedAtMonotonicMs, this.#observedUntilOffsetMs())
+  }
+
+  /** 读取观测窗口。与 `#readOffset` 不同,读快照不应推进时钟游标或产生诊断。 */
+  #observedUntilOffsetMs(): number {
+    const now = this.#clock.now()
+    if (!Number.isFinite(now)) return this.#lastOffsetMs
+    return Math.max(this.#lastOffsetMs, now - this.#attachedAtMonotonicMs)
   }
 
   #readInitialClock(): number {

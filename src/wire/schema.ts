@@ -31,13 +31,36 @@ export const profileProvenanceSchema = z.object({
   }),
 })
 
+export const dependencyLinkSchema = z.object({
+  service: z.string().min(1),
+  providerEntryId: z.string().min(1).optional(),
+})
+
+export const blockingAttributionSchema = z.object({
+  service: z.string().min(1),
+  entryId: z.string().min(1),
+  providerReadyOffsetMs: nonnegativeFiniteNumber,
+  skewMs: z.number().finite(),
+})
+
+export const selfTimeSchema = z.object({
+  durationMs: nullableFiniteNumber,
+  basis: z.enum(['exact', 'upper-bound', 'unobserved']),
+  childEntryCount: z.number().int().nonnegative(),
+})
+
 export const activationSampleSchema = z.object({
-  schemaVersion: z.literal(2),
+  schemaVersion: z.literal(3),
   runId: z.string().min(1),
   entryId: z.string().min(1),
   moduleName: z.string().min(1).optional(),
   origin: pluginOriginSchema,
   generation: z.number().int().positive(),
+  isGroup: z.boolean(),
+  parentEntryId: z.string().min(1).optional(),
+  dependencies: z.array(dependencyLinkSchema),
+  blockedBy: blockingAttributionSchema.optional(),
+  selfTime: selfTimeSchema,
   firstSeenOffsetMs: nonnegativeFiniteNumber,
   lastSeenOffsetMs: nonnegativeFiniteNumber,
   lastState: z.enum([
@@ -79,12 +102,13 @@ export const profilerDiagnosticSchema = z.object({
 })
 
 export const profilerSnapshotSchema = z.object({
-  schemaVersion: z.literal(2),
+  schemaVersion: z.literal(3),
   provenance: profileProvenanceSchema,
   collector: z.object({
     mode: z.literal('host-runtime'),
     coverage: z.literal('partial'),
     attachedAtMonotonicMs: nonnegativeFiniteNumber,
+    observedUntilOffsetMs: nonnegativeFiniteNumber,
     target: z.object({
       dshVersion: z.string().min(1),
       dshCommit: z.string().min(1),
