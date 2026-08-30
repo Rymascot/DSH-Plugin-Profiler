@@ -23,6 +23,8 @@ interface CordisFiberLike {
 }
 
 export interface CordisContextLike {
+  /** Loader 锚定在 Profile 目录上的 file URL;归属判定用它定位 Profile 清单。 */
+  readonly baseUrl?: unknown
   on(
     event: 'internal/status',
     listener: (fiber: CordisFiberLike, previousState: unknown) => void,

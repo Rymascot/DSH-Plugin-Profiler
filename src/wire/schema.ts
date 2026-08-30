@@ -12,11 +12,31 @@ export const segmentTimingSchema = z.object({
   completeness: z.enum(['complete', 'left-censored', 'right-censored', 'unobserved']),
 })
 
+export const pluginOriginSchema = z.enum(['builtin', 'user', 'unknown'])
+
+export const bundleOriginSchema = z.object({
+  packageName: z.string().min(1),
+  origin: z.enum(['builtin', 'user']),
+})
+
+export const profileProvenanceSchema = z.object({
+  resolved: z.boolean(),
+  reason: z.string().optional(),
+  profileName: z.string().min(1).optional(),
+  bundles: z.array(bundleOriginSchema),
+  counts: z.object({
+    builtin: z.number().int().nonnegative(),
+    user: z.number().int().nonnegative(),
+    unknown: z.number().int().nonnegative(),
+  }),
+})
+
 export const activationSampleSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   runId: z.string().min(1),
   entryId: z.string().min(1),
   moduleName: z.string().min(1).optional(),
+  origin: pluginOriginSchema,
   generation: z.number().int().positive(),
   firstSeenOffsetMs: nonnegativeFiniteNumber,
   lastSeenOffsetMs: nonnegativeFiniteNumber,
@@ -59,7 +79,8 @@ export const profilerDiagnosticSchema = z.object({
 })
 
 export const profilerSnapshotSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
+  provenance: profileProvenanceSchema,
   collector: z.object({
     mode: z.literal('host-runtime'),
     coverage: z.literal('partial'),

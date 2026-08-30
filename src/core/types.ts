@@ -28,6 +28,28 @@ export interface SegmentTiming {
   readonly completeness: SegmentCompleteness
 }
 
+/** 插件条目的归属:DSH 自带、用户安装,或无法判定。 */
+export type PluginOrigin = 'builtin' | 'user' | 'unknown'
+
+/** Profile `dsh.profile.bundles` 中的一层及其归属。 */
+export interface BundleOrigin {
+  readonly packageName: string
+  readonly origin: 'builtin' | 'user'
+}
+
+/** 归属判定的来源描述;读不到 Profile 清单时 `resolved` 为 false。 */
+export interface ProvenanceSource {
+  readonly resolved: boolean
+  readonly reason?: string
+  readonly profileName?: string
+  readonly bundles: readonly BundleOrigin[]
+}
+
+/** 快照级归属信息。`counts` 按 entryId 去重,重载不会把同一个插件数两次。 */
+export interface ProfileProvenance extends ProvenanceSource {
+  readonly counts: Readonly<Record<PluginOrigin, number>>
+}
+
 export type ActivationOutcome =
   | 'active'
   | 'failed'
@@ -35,10 +57,11 @@ export type ActivationOutcome =
   | 'disposed-before-terminal'
 
 export interface ActivationSample {
-  readonly schemaVersion: 1
+  readonly schemaVersion: 2
   readonly runId: string
   readonly entryId: string
   readonly moduleName?: string
+  readonly origin: PluginOrigin
   readonly generation: number
   readonly firstSeenOffsetMs: number
   readonly lastSeenOffsetMs: number
@@ -74,7 +97,8 @@ export interface ProfilerDiagnostic {
 }
 
 export interface ProfilerSnapshot {
-  readonly schemaVersion: 1
+  readonly schemaVersion: 2
+  readonly provenance: ProfileProvenance
   readonly collector: {
     readonly mode: 'host-runtime'
     readonly coverage: 'partial'

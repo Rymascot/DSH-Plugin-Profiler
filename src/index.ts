@@ -1,5 +1,6 @@
 import { createCordisLifecycleSource, type CordisContextLike } from './adapters/cordis-internal.js'
-import { ProfilerCollector } from './core/collector.js'
+import { createProfileOriginIndex } from './adapters/profile-manifest.js'
+import { monotonicClock, ProfilerCollector } from './core/collector.js'
 import { ProfilerGateway } from './host/gateway.js'
 import { PROFILER_SERVICE } from './typert-descriptor.js'
 
@@ -9,6 +10,13 @@ export {
   createCordisLifecycleSource,
   mapCordisFiberState,
 } from './adapters/cordis-internal.js'
+export {
+  createProfileOriginIndex,
+  profileDirFromBaseUrl,
+  readProfileManifestFacts,
+  type ManifestReader,
+  type ProfileAnchorLike,
+} from './adapters/profile-manifest.js'
 export * from './core/index.js'
 export { ProfilerGateway } from './host/gateway.js'
 export { parseProfilerSnapshot, profilerSnapshotSchema } from './wire/schema.js'
@@ -35,7 +43,14 @@ export function apply(ctx: CordisContextLike): void {
   }
 
   ctx.effect(() => {
-    const collector = new ProfilerCollector(createCordisLifecycleSource(ctx))
+    // 归属只影响展示分层,读清单失败会降级成"未判定",不会影响采集。
+    const origin = createProfileOriginIndex(ctx)
+    const collector = new ProfilerCollector(
+      createCordisLifecycleSource(ctx),
+      monotonicClock,
+      undefined,
+      origin,
+    )
     const stop = collector.start()
     const gateway = new ProfilerGateway(collector)
     let disposeGateway: (() => unknown) | undefined

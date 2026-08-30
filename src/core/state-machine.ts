@@ -1,3 +1,4 @@
+import { unresolvedOriginIndex, type OriginIndex } from './provenance.js'
 import {
   EXCLUDED_MEASUREMENTS,
   PARTIAL_COVERAGE,
@@ -7,6 +8,7 @@ import {
   type DiagnosticCode,
   type LifecycleSignal,
   type LifecycleState,
+  type PluginOrigin,
   type ProfilerDiagnostic,
   type ProfilerSnapshot,
   type SegmentTiming,
@@ -78,11 +80,24 @@ function completed(startOffsetMs: number, endOffsetMs: number): SegmentTiming {
   }
 }
 
-function serialize(record: MutableRecord): ActivationSample {
+/** 按 entryId 去重统计各归属的插件数;同一插件重载多次只算一个。 */
+function countDistinctEntriesByOrigin(
+  samples: readonly ActivationSample[],
+): Record<PluginOrigin, number> {
+  const seen = new Map<string, PluginOrigin>()
+  for (const sample of samples) seen.set(sample.entryId, sample.origin)
+
+  const counts: Record<PluginOrigin, number> = { builtin: 0, user: 0, unknown: 0 }
+  for (const origin of seen.values()) counts[origin] += 1
+  return counts
+}
+
+function serialize(record: MutableRecord, origin: OriginIndex): ActivationSample {
   const base = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     runId: record.runId,
     entryId: record.entryId,
+    origin: origin.originOf(record.moduleName),
     generation: record.generation,
     firstSeenOffsetMs: record.firstSeenOffsetMs,
     lastSeenOffsetMs: record.lastSeenOffsetMs,
@@ -103,10 +118,15 @@ function serialize(record: MutableRecord): ActivationSample {
 }
 
 export class ActivationStateMachine {
+  readonly #origin: OriginIndex
   readonly #records: MutableRecord[] = []
   readonly #byFiber = new WeakMap<object, FiberCursor>()
   readonly #generationByEntry = new Map<string, number>()
   readonly #diagnostics: ProfilerDiagnostic[] = []
+
+  constructor(origin: OriginIndex = unresolvedOriginIndex('未接入 Profile 清单。')) {
+    this.#origin = origin
+  }
 
   consume(signal: LifecycleSignal, offsetMs: number): ActivationSample | undefined {
     if (signal.entryId === undefined || signal.entryId.trim() === '') {
@@ -161,7 +181,7 @@ export class ActivationStateMachine {
 
     if (cursor.record.outcome !== 'in-progress' && !cursor.record.completionReported) {
       cursor.record.completionReported = true
-      return serialize(cursor.record)
+      return serialize(cursor.record, this.#origin)
     }
 
     return undefined
@@ -190,8 +210,14 @@ export class ActivationStateMachine {
       byCode[diagnostic.code] += 1
     }
 
+    const samples = this.#records.map(record => serialize(record, this.#origin))
+
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
+      provenance: {
+        ...this.#origin.source,
+        counts: countDistinctEntriesByOrigin(samples),
+      },
       collector: {
         mode: 'host-runtime',
         coverage: 'partial',
@@ -202,7 +228,7 @@ export class ActivationStateMachine {
         },
         excluded: EXCLUDED_MEASUREMENTS,
       },
-      samples: this.#records.map(serialize),
+      samples,
       diagnostics: {
         total: this.#diagnostics.length,
         byCode,

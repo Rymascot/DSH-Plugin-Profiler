@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { Clock, Dispose, LifecycleSource } from '../src/core/contracts.js'
 import { ProfilerCollector } from '../src/core/collector.js'
+import { createOriginIndex } from '../src/core/provenance.js'
 import type { LifecycleSignal } from '../src/core/types.js'
 
 class FakeClock implements Clock {
@@ -31,9 +32,16 @@ function signal(
   previous: LifecycleSignal['previous'],
   current: LifecycleSignal['current'],
   entryId = 'demo',
+  moduleName = 'dsh-demo',
 ): LifecycleSignal {
-  return { fiberToken, previous, current, entryId, moduleName: 'dsh-demo' }
+  return { fiberToken, previous, current, entryId, moduleName }
 }
+
+const webProfileOrigin = createOriginIndex({
+  profileName: 'dsh-profile-web',
+  bundles: ['@deepseek-ai/dsh-base', 'dsh-plugin-profiler'],
+  dependencies: ['dsh-plugin-profiler'],
+})
 
 describe('ProfilerCollector', () => {
   it('measures a complete loading-to-active activation segment', () => {
@@ -151,3 +159,53 @@ describe('ProfilerCollector', () => {
   })
 })
 
+describe('ProfilerCollector 归属分层', () => {
+  it('给每个样本标注归属,并按 entryId 去重计数', () => {
+    const source = new FakeLifecycleSource()
+    const clock = new FakeClock()
+    const collector = new ProfilerCollector(source, clock, undefined, webProfileOrigin)
+    const mine = {}
+    const builtin = {}
+
+    collector.start()
+    clock.value = 1
+    source.emit(signal(mine, 'pending', 'loading', 'profiler', 'dsh-plugin-profiler'))
+    source.emit(signal(builtin, 'pending', 'loading', 'llm', '@deepseek-ai/dsh-llm'))
+    clock.value = 4
+    source.emit(signal(mine, 'loading', 'active', 'profiler', 'dsh-plugin-profiler'))
+    source.emit(signal(builtin, 'loading', 'active', 'llm', '@deepseek-ai/dsh-llm'))
+    // 同一个插件重载一次:样本变两条,但计数仍应只算一个插件。
+    clock.value = 5
+    source.emit(signal(mine, 'active', 'loading', 'profiler', 'dsh-plugin-profiler'))
+    clock.value = 6
+    source.emit(signal(mine, 'loading', 'active', 'profiler', 'dsh-plugin-profiler'))
+
+    const snapshot = collector.snapshot()
+    expect(snapshot.samples.map(sample => [sample.entryId, sample.origin])).toEqual([
+      ['profiler', 'user'],
+      ['llm', 'builtin'],
+      ['profiler', 'user'],
+    ])
+    expect(snapshot.provenance.counts).toEqual({ builtin: 1, user: 1, unknown: 0 })
+    expect(snapshot.provenance.resolved).toBe(true)
+    expect(snapshot.provenance.profileName).toBe('dsh-profile-web')
+  })
+
+  it('没有归属索引时全部标为未判定', () => {
+    const source = new FakeLifecycleSource()
+    const clock = new FakeClock()
+    const collector = new ProfilerCollector(source, clock)
+    const fiber = {}
+
+    collector.start()
+    clock.value = 1
+    source.emit(signal(fiber, 'pending', 'loading'))
+    clock.value = 2
+    source.emit(signal(fiber, 'loading', 'active'))
+
+    const snapshot = collector.snapshot()
+    expect(snapshot.samples.map(sample => sample.origin)).toEqual(['unknown'])
+    expect(snapshot.provenance.resolved).toBe(false)
+    expect(snapshot.provenance.counts).toEqual({ builtin: 0, user: 0, unknown: 1 })
+  })
+})

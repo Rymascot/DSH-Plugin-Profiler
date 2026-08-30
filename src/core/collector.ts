@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks'
 
 import type { Clock, Dispose, LifecycleSource, SampleReporter } from './contracts.js'
+import { unresolvedOriginIndex, type OriginIndex } from './provenance.js'
 import { ActivationStateMachine } from './state-machine.js'
 import type { ProfilerSnapshot } from './types.js'
 
@@ -9,7 +10,7 @@ export const monotonicClock: Clock = {
 }
 
 export class ProfilerCollector {
-  readonly #stateMachine = new ActivationStateMachine()
+  readonly #stateMachine: ActivationStateMachine
   readonly #source: LifecycleSource
   readonly #clock: Clock
   readonly #reporter: SampleReporter | undefined
@@ -23,10 +24,12 @@ export class ProfilerCollector {
     source: LifecycleSource,
     clock: Clock = monotonicClock,
     reporter?: SampleReporter,
+    origin: OriginIndex = unresolvedOriginIndex('未接入 Profile 清单。'),
   ) {
     this.#source = source
     this.#clock = clock
     this.#reporter = reporter
+    this.#stateMachine = new ActivationStateMachine(origin)
   }
 
   start(): Dispose {
