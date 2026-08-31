@@ -50,12 +50,14 @@ export const selfTimeSchema = z.object({
 })
 
 export const activationSampleSchema = z.object({
-  schemaVersion: z.literal(3),
+  schemaVersion: z.literal(4),
   runId: z.string().min(1),
   entryId: z.string().min(1),
   moduleName: z.string().min(1).optional(),
   origin: pluginOriginSchema,
-  generation: z.number().int().positive(),
+  observation: z.enum(['lifecycle', 'enumerated']),
+  // 0 是合法的:只在 Loader 名单上见过,一次激活都没观测到。
+  generation: z.number().int().nonnegative(),
   isGroup: z.boolean(),
   parentEntryId: z.string().min(1).optional(),
   dependencies: z.array(dependencyLinkSchema),
@@ -102,7 +104,7 @@ export const profilerDiagnosticSchema = z.object({
 })
 
 export const profilerSnapshotSchema = z.object({
-  schemaVersion: z.literal(3),
+  schemaVersion: z.literal(4),
   provenance: profileProvenanceSchema,
   collector: z.object({
     mode: z.literal('host-runtime'),

@@ -6,6 +6,14 @@ Remote snapshot, and a Web settings contribution under Plugins / Performance.
 ## What is measured
 
 - Cordis `internal/status` transitions observed after this Bundle attaches.
+- The current Loader roster, re-read on every snapshot through `ctx.loader
+  .entries()`. This is not a convenience: `internal/status` fires only on a
+  *change*, and this Bundle loads late, so every plugin that finished starting
+  first sits still at `active` and never emits again. Events alone cannot even
+  prove those plugins exist. Entries the event stream never saw are published
+  with `observation: 'enumerated'`, generation `0`, and every timing field left
+  empty — present and stateful, but never measured. Entries without a live fiber
+  are skipped; reporting what never ran would make this an install inventory.
 - Loader-backed entries identified by `entry.id`.
 - Dependency-wait and activation segments kept separate.
 - Reloads represented by `entry.id + generation`.
@@ -96,12 +104,13 @@ remain independent of them.
 
 ## Wire version
 
-The snapshot and sample contracts are both at `schemaVersion: 3`. v0.2 added
+The snapshot and sample contracts are both at `schemaVersion: 4`. v0.2 added
 `sample.origin` and `snapshot.provenance`; v0.3 added `sample.isGroup`,
 `sample.parentEntryId`, `sample.selfTime`, `sample.dependencies`,
-`sample.blockedBy`, and `collector.observedUntilOffsetMs`. Host and client ship
-from one package, so a mismatch means a stale build is mounted — the strict Zod
-codec rejects it rather than rendering a partial page.
+`sample.blockedBy`, and `collector.observedUntilOffsetMs`; v0.3.2 added
+`sample.observation` and widened `sample.generation` to allow `0`. Host and
+client ship from one package, so a mismatch means a stale build is mounted — the
+strict Zod codec rejects it rather than rendering a partial page.
 
 ## Deliberately out of scope
 

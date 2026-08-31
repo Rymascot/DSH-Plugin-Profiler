@@ -11,6 +11,7 @@ import {
   type LifecycleSignal,
   type LifecycleState,
   type PluginOrigin,
+  type LoaderEntryView,
   type ProfilerDiagnostic,
   type ProfilerSnapshot,
   type SegmentTiming,
@@ -211,6 +212,48 @@ class DerivationIndex {
   }
 }
 
+function outcomeOfState(state: LifecycleState): ActivationOutcome {
+  if (state === 'active') return 'active'
+  if (state === 'failed') return 'failed'
+  if (state === 'unloading' || state === 'disposed') return 'disposed-before-terminal'
+  return 'in-progress'
+}
+
+/**
+ * 只在 Loader 名单上见过、一次状态转换都没观测到的条目。
+ *
+ * 全部计时字段留空。它确实在跑,状态也是真的,但它跑了多久这个工具不知道——把
+ * 这种情况和"测到了"混为一谈,就等于开始编数字。
+ */
+function enumeratedSample(entry: LoaderEntryView, origin: OriginIndex): ActivationSample {
+  const base = {
+    schemaVersion: 4,
+    runId: `${entry.entryId}:0`,
+    entryId: entry.entryId,
+    origin: origin.originOf(entry.moduleName),
+    observation: 'enumerated',
+    generation: 0,
+    isGroup: entry.isGroup,
+    firstSeenOffsetMs: 0,
+    lastSeenOffsetMs: 0,
+    lastState: entry.state,
+    outcome: outcomeOfState(entry.state),
+    dependencies: entry.dependencies.map(link => ({ ...link })),
+    selfTime: { durationMs: null, basis: 'unobserved', childEntryCount: 0 },
+    segments: {
+      dependencyWait: unobserved(),
+      activation: unobserved(),
+    },
+    coverage: PARTIAL_COVERAGE,
+  } as const
+
+  return {
+    ...base,
+    ...(entry.moduleName === undefined ? {} : { moduleName: entry.moduleName }),
+    ...(entry.parentEntryId === undefined ? {} : { parentEntryId: entry.parentEntryId }),
+  }
+}
+
 function serialize(
   record: MutableRecord,
   origin: OriginIndex,
@@ -218,10 +261,11 @@ function serialize(
 ): ActivationSample {
   const blockedBy = index.blockedByOf(record)
   const base = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     runId: record.runId,
     entryId: record.entryId,
     origin: origin.originOf(record.moduleName),
+    observation: 'lifecycle',
     generation: record.generation,
     isGroup: record.isGroup,
     firstSeenOffsetMs: record.firstSeenOffsetMs,
@@ -358,7 +402,16 @@ export class ActivationStateMachine {
     })
   }
 
-  snapshot(attachedAtMonotonicMs: number, observedUntilOffsetMs: number): ProfilerSnapshot {
+  /**
+   * @param loaderEntries - 当前 Loader 名单。名单上有、但事件流里从没出现过的条目
+   * 会被补进来,标成 `enumerated`。少了这一步,先于 Profiler 启动完的插件会彻底消失
+   * ——页面于是把"我没看见"讲成了"它不存在"。
+   */
+  snapshot(
+    attachedAtMonotonicMs: number,
+    observedUntilOffsetMs: number,
+    loaderEntries: readonly LoaderEntryView[] = [],
+  ): ProfilerSnapshot {
     const byCode = Object.fromEntries(
       DIAGNOSTIC_CODES.map(code => [code, 0]),
     ) as Record<DiagnosticCode, number>
@@ -370,8 +423,14 @@ export class ActivationStateMachine {
     const index = new DerivationIndex(this.#records)
     const samples = this.#records.map(record => serialize(record, this.#origin, index))
 
+    const observed = new Set(this.#records.map(record => record.entryId))
+    for (const entry of loaderEntries) {
+      if (observed.has(entry.entryId)) continue
+      samples.push(enumeratedSample(entry, this.#origin))
+    }
+
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       provenance: {
         ...this.#origin.source,
         counts: countDistinctEntriesByOrigin(samples),

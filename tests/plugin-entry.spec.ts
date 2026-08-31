@@ -26,7 +26,7 @@ describe('Cordis plugin entry', () => {
     expect(getProfilerGateway(ctx)).toBeDefined()
     expect(ctx.on).toHaveBeenCalledTimes(1)
     expect(ctx.provide).toHaveBeenCalledWith('pluginProfiler', getProfilerGateway(ctx))
-    expect(getProfilerGateway(ctx)?.snapshot().schemaVersion).toBe(3)
+    expect(getProfilerGateway(ctx)?.snapshot().schemaVersion).toBe(4)
     // 这个 ctx 没有 baseUrl 锚点,归属应当降级而不是让 apply() 失败。
     expect(getProfilerGateway(ctx)?.snapshot().provenance.resolved).toBe(false)
     cleanup?.()

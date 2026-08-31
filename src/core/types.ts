@@ -28,6 +28,33 @@ export interface DependencyLink {
 }
 
 /**
+ * 直接从 Loader 名单上读到的一个条目。
+ *
+ * `internal/status` 只在状态**变化**时才发。Profiler 是 Profile 里靠后加载的一层,
+ * 等它开始监听,先启动完的插件早已停在 active 上不动,再也不会发事件——光靠事件流
+ * 根本不知道它们存在。读一遍 Loader 名单是唯一能知道"有谁"的办法。
+ *
+ * 名单只给得出"有谁、现在什么状态",给不出耗时。两者必须分开表达,不能把没测到的
+ * 说成测到了。
+ */
+export interface LoaderEntryView {
+  readonly entryId: string
+  readonly moduleName?: string
+  readonly isGroup: boolean
+  readonly parentEntryId?: string
+  readonly state: LifecycleState
+  readonly dependencies: readonly DependencyLink[]
+}
+
+/**
+ * 这条记录的来源。
+ *
+ * `lifecycle` 是真看着它跑完一轮激活,有计时。`enumerated` 只是在名单上见过它,
+ * 说明它确实存在、现在是什么状态,但一个时间数字都没有。
+ */
+export type SampleObservation = 'lifecycle' | 'enumerated'
+
+/**
  * 解除阻塞的那条依赖:最后一个就绪的提供方。
  *
  * `skewMs` 是提供方就绪与本条目离开 pending 之间的间隔。归因正确时两者应当几乎
@@ -96,11 +123,13 @@ export type ActivationOutcome =
   | 'disposed-before-terminal'
 
 export interface ActivationSample {
-  readonly schemaVersion: 3
+  readonly schemaVersion: 4
   readonly runId: string
   readonly entryId: string
   readonly moduleName?: string
   readonly origin: PluginOrigin
+  readonly observation: SampleObservation
+  /** 第几次激活。`0` 表示一次都没观测到,只是在 Loader 名单上见过它。 */
   readonly generation: number
   /** 分组容器,不是插件本身;它的激活跨度包含子条目,排名时应当排除。 */
   readonly isGroup: boolean
@@ -142,7 +171,7 @@ export interface ProfilerDiagnostic {
 }
 
 export interface ProfilerSnapshot {
-  readonly schemaVersion: 3
+  readonly schemaVersion: 4
   readonly provenance: ProfileProvenance
   readonly collector: {
     readonly mode: 'host-runtime'

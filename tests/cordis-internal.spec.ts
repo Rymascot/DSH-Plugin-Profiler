@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   CORDIS_FIBER_STATE,
   createCordisLifecycleSource,
+  readLoaderEntries,
   mapCordisFiberState,
   type CordisContextLike,
 } from '../src/adapters/cordis-internal.js'
@@ -137,6 +138,59 @@ describe('Cordis 结构关系与依赖提供方', () => {
         options: { name: 'dsh-b', inject: { required: ['db'], optional: ['log'] } },
       },
     })['dependencies']).toEqual([{ service: 'db' }, { service: 'log' }])
+  })
+
+  it('从 Loader 名单读出条目,跳过没有 Fiber 的那些', () => {
+    const ctx = {
+      on: vi.fn(),
+      effect: vi.fn(),
+      loader: {
+        *entries() {
+          yield {
+            id: 'running',
+            options: { name: 'dsh-running', group: true },
+            fiber: {
+              state: CORDIS_FIBER_STATE.ACTIVE,
+              parent: { fiber: { entry: { id: 'bundle' } } },
+              inject: { db: {} },
+              store: { db: { name: 'db', fiber: { entry: { id: 'p1' } } } },
+            },
+          }
+          // 条目在配置里,但没跑起来(比如被禁用)。这个工具只报告跑过的东西。
+          yield { id: 'disabled', options: { name: 'dsh-disabled' } }
+          // 没有 id 的条目本来就无法辨认。
+          yield { options: { name: 'dsh-anonymous' }, fiber: { state: CORDIS_FIBER_STATE.ACTIVE } }
+        },
+      },
+    } as unknown as CordisContextLike
+
+    expect(readLoaderEntries(ctx)).toEqual([{
+      entryId: 'running',
+      moduleName: 'dsh-running',
+      isGroup: true,
+      parentEntryId: 'bundle',
+      state: 'active',
+      dependencies: [{ service: 'db', providerEntryId: 'p1' }],
+    }])
+  })
+
+  it('没有 loader 或者名单读到一半炸了,都不让 Host 挂掉', () => {
+    expect(readLoaderEntries({ on: vi.fn(), effect: vi.fn() } as unknown as CordisContextLike))
+      .toEqual([])
+
+    const exploding = {
+      on: vi.fn(),
+      effect: vi.fn(),
+      loader: {
+        *entries() {
+          yield { id: 'ok', options: { name: 'dsh-ok' }, fiber: { state: CORDIS_FIBER_STATE.ACTIVE } }
+          throw new Error('loader internals changed')
+        },
+      },
+    } as unknown as CordisContextLike
+
+    // 炸之前读到的那些留着,比整个丢掉有用。
+    expect(readLoaderEntries(exploding).map(entry => entry.entryId)).toEqual(['ok'])
   })
 
   it('卸载清空 store 之后仍保留服务名,只是没有提供方', () => {

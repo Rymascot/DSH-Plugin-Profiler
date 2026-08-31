@@ -1,4 +1,8 @@
-import { createCordisLifecycleSource, type CordisContextLike } from './adapters/cordis-internal.js'
+import {
+  createCordisLifecycleSource,
+  readLoaderEntries,
+  type CordisContextLike,
+} from './adapters/cordis-internal.js'
 import { createProfileOriginIndex } from './adapters/profile-manifest.js'
 import { monotonicClock, ProfilerCollector } from './core/collector.js'
 import { ProfilerGateway } from './host/gateway.js'
@@ -9,6 +13,7 @@ export {
   CORDIS_FIBER_STATE,
   createCordisLifecycleSource,
   mapCordisFiberState,
+  readLoaderEntries,
 } from './adapters/cordis-internal.js'
 export {
   createProfileOriginIndex,
@@ -50,6 +55,9 @@ export function apply(ctx: CordisContextLike): void {
       monotonicClock,
       undefined,
       origin,
+      // 每次读快照都重新问一遍 Loader,而不是在这里存一份:名单会变(装插件、重载、
+      // 卸载),存下来的那一刻起就开始过期。
+      { entries: () => readLoaderEntries(ctx) },
     )
     const stop = collector.start()
     const gateway = new ProfilerGateway(collector)

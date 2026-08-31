@@ -33,7 +33,7 @@ const SELF_TIME_KEYS = {
   unobserved: 'unobserved',
 } satisfies Record<ActivationSample['selfTime']['basis'], ProfilerLocaleKey>
 
-/** 归属筛选项。`all` 是默认值:先看"谁最慢",再决定要不要缩到自己的插件。 */
+/** 归属筛选项。只在展开后的完整视图里出现。 */
 export type OriginFilter = PluginOrigin | 'all'
 
 const ORIGIN_FILTERS: readonly OriginFilter[] = ['all', 'user', 'builtin', 'unknown']
@@ -53,6 +53,17 @@ const COMPLETENESS_KEYS = {
  */
 export const ATTRIBUTION_SKEW_LIMIT_MS = 50
 
+/** 把 `{name}` 之类的占位符填上。中英文语序不同,只能整句给模板。 */
+export function fill(
+  template: string,
+  values: Readonly<Record<string, string | number>>,
+): string {
+  return template.replace(/\{(\w+)\}/g, (match: string, name: string) => {
+    const value = values[name]
+    return value === undefined ? match : String(value)
+  })
+}
+
 /** 返回完整的激活耗时，不计入被截断的观测值。 */
 export function activationDurations(samples: readonly ActivationSample[]): number[] {
   return samples.flatMap(sample => {
@@ -61,6 +72,83 @@ export function activationDurations(samples: readonly ActivationSample[]): numbe
       ? [segment.durationMs]
       : []
   })
+}
+
+/**
+ * 每个插件只保留最近一次激活。
+ *
+ * 一个插件可能重载过好几次,而用户关心的是"它现在好不好",不是它第一次起来时
+ * 怎么样。开发者要看全部代次,那是展开视图的事。
+ */
+export function latestByEntry(samples: readonly ActivationSample[]): ActivationSample[] {
+  const latest = new Map<string, ActivationSample>()
+  for (const sample of samples) {
+    const current = latest.get(sample.entryId)
+    if (current === undefined || sample.generation > current.generation) {
+      latest.set(sample.entryId, sample)
+    }
+  }
+  return [...latest.values()]
+}
+
+/** 默认视图要下的那个结论。 */
+export interface UserPluginVerdict {
+  readonly tone: 'none' | 'ok' | 'unfinished' | 'failed'
+  readonly pluginCount: number
+  readonly failedCount: number
+  readonly unfinishedCount: number
+  /** 只有一个出问题时才给名字;更多时给数量,免得句子变成一串清单。 */
+  readonly onlyName?: string
+  /** 有多少个插件测到了耗时。为 0 时那句话得说明白,否则「都正常」听着像有数据。 */
+  readonly timedCount: number
+  /** 每个插件都测到耗时才有总和,否则宁可不说,也不给个偏小的数。 */
+  readonly totalSelfMs: number | null
+}
+
+export function userPluginVerdict(
+  userSamples: readonly ActivationSample[],
+): UserPluginVerdict {
+  const plugins = latestByEntry(userSamples)
+  if (plugins.length === 0) {
+    return {
+      tone: 'none',
+      pluginCount: 0,
+      failedCount: 0,
+      unfinishedCount: 0,
+      timedCount: 0,
+      totalSelfMs: null,
+    }
+  }
+
+  const failed = plugins.filter(sample => sample.outcome === 'failed')
+  const unfinished = plugins.filter(
+    sample => sample.outcome === 'in-progress' || sample.outcome === 'disposed-before-terminal',
+  )
+
+  let totalSelfMs: number | null = 0
+  for (const plugin of plugins) {
+    const duration = plugin.selfTime.durationMs
+    if (duration === null || totalSelfMs === null) {
+      totalSelfMs = null
+      continue
+    }
+    totalSelfMs += duration
+  }
+
+  const troubled = failed.length > 0 ? failed : unfinished
+  const onlyName = troubled.length === 1 && troubled[0] !== undefined
+    ? displayName(troubled[0])
+    : undefined
+
+  return {
+    tone: failed.length > 0 ? 'failed' : unfinished.length > 0 ? 'unfinished' : 'ok',
+    pluginCount: plugins.length,
+    failedCount: failed.length,
+    unfinishedCount: unfinished.length,
+    timedCount: plugins.filter(sample => sample.selfTime.durationMs !== null).length,
+    ...(onlyName === undefined ? {} : { onlyName }),
+    totalSelfMs,
+  }
 }
 
 /**
@@ -141,6 +229,32 @@ function downloadSnapshot(snapshot: ProfilerSnapshot): void {
 
 function displayName(sample: ActivationSample): string {
   return sample.moduleName ?? sample.entryId
+}
+
+/**
+ * 为什么这一行没有耗时。
+ *
+ * 「没测到」有两种成因,而它们在页面上长得一模一样(都是 —)。不说清楚,用户只会
+ * 看到两行同样的破折号,其中一行莫名带着标签。
+ */
+export function untimedReasonKey(sample: ActivationSample): ProfilerLocaleKey {
+  return sample.observation === 'enumerated' ? 'untimedRoster' : 'untimedCensored'
+}
+
+/**
+ * 按插件数(而不是记录数)统计有多少个测到了耗时。
+ *
+ * 归属筛选上的计数是"多少个插件",这里必须用同一把尺子。一个说 141 一个说 152,
+ * 哪怕两个都对,并排放着也只会让人以为出了错。
+ */
+export function timedPluginCounts(
+  samples: readonly ActivationSample[],
+): { readonly timed: number; readonly total: number } {
+  const plugins = latestByEntry(samples)
+  return {
+    timed: plugins.filter(sample => sample.selfTime.durationMs !== null).length,
+    total: plugins.length,
+  }
 }
 
 /** entryId -> 展示名,用来把归因里的条目 id 换成人能读的名字。 */
@@ -227,7 +341,7 @@ function SelfTimeValue({
       <span
         className="dpp-duration dpp-number"
         data-complete={basis === 'exact' ? 'true' : 'false'}
-        title={t(SELF_TIME_KEYS[basis])}
+        title={durationMs === null ? t(untimedReasonKey(sample)) : t(SELF_TIME_KEYS[basis])}
       >
         {basis === 'upper-bound' && durationMs !== null ? '≤ ' + text : text}
       </span>
@@ -268,10 +382,72 @@ function WaitValue({
   )
 }
 
+function PluginName({
+  sample,
+  t,
+}: {
+  readonly sample: ActivationSample
+  readonly t: ProfilerSettingsTabProps['t']
+}): ReactNode {
+  return (
+    <span className="dpp-plugin">
+      <strong title={displayName(sample)}>
+        <span className="dpp-name">{displayName(sample)}</span>
+        {sample.selfTime.durationMs === null
+          ? (
+            <span className="dpp-tag" data-tag="untimed" title={t(untimedReasonKey(sample))}>
+              {t('untimedTag')}
+            </span>
+          )
+          : null}
+        {sample.isGroup ? <span className="dpp-tag" data-tag="group">{t('group')}</span> : null}
+        {sample.generation > 1
+          ? (
+            <span className="dpp-tag" data-tag="reload" title={t('generation')}>
+              {t('reloaded') + ' ×' + sample.generation}
+            </span>
+          )
+          : null}
+      </strong>
+      <code title={sample.entryId}>{sample.entryId}</code>
+    </span>
+  )
+}
+
+function verdictText(
+  verdict: UserPluginVerdict,
+  t: ProfilerSettingsTabProps['t'],
+): string {
+  if (verdict.tone === 'none') return t('verdictNone')
+
+  if (verdict.tone === 'failed') {
+    return verdict.onlyName === undefined
+      ? fill(t('verdictFailedMany'), { count: verdict.failedCount })
+      : fill(t('verdictFailedOne'), { name: verdict.onlyName })
+  }
+
+  if (verdict.tone === 'unfinished') {
+    return verdict.onlyName === undefined
+      ? fill(t('verdictUnfinishedMany'), { count: verdict.unfinishedCount })
+      : fill(t('verdictUnfinishedOne'), { name: verdict.onlyName })
+  }
+
+  // 一个都没测到的时候,「都正常」听着像背后有数据支撑。得说清楚是怎么回事。
+  if (verdict.timedCount === 0) return fill(t('verdictOkUntimed'), { count: verdict.pluginCount })
+
+  return verdict.totalSelfMs === null
+    ? fill(t('verdictOk'), { count: verdict.pluginCount })
+    : fill(t('verdictOkTotal'), {
+      count: verdict.pluginCount,
+      total: formatDuration(verdict.totalSelfMs),
+    })
+}
+
 export function ProfilerSettingsTab({ readSnapshot, t }: ProfilerSettingsTabProps): ReactNode {
   const [request, setRequest] = useState(0)
   const [query, setQuery] = useState('')
   const [origin, setOrigin] = useState<OriginFilter>('all')
+  const [expanded, setExpanded] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [state, setState] = useState<ViewState>({ status: 'loading' })
 
@@ -294,12 +470,25 @@ export function ProfilerSettingsTab({ readSnapshot, t }: ProfilerSettingsTabProp
 
   const snapshot = state.status === 'ready' ? state.snapshot : null
 
-  // 归属筛选决定统计范围,搜索只在该范围内查找,所以指标跟着筛选走、不跟着搜索走。
+  // 读不到 Profile 清单就分不清哪个是用户装的,默认视图无从谈起,直接给完整视图。
+  const resolved = snapshot !== null && snapshot.provenance.resolved
+  const showAll = expanded || !resolved
+
+  const userPlugins = useMemo(
+    () => snapshot === null
+      ? []
+      : sortedSamples(latestByEntry(snapshot.samples.filter(sample => sample.origin === 'user'))),
+    [snapshot],
+  )
+  const verdict = useMemo(() => userPluginVerdict(userPlugins), [userPlugins])
+
+  // 展开视图的统计跟着归属筛选走,不跟着搜索走。
   const scopedSamples = useMemo(
     () => snapshot === null ? [] : snapshot.samples.filter(sample => matchesOrigin(sample, origin)),
     [origin, snapshot],
   )
   const durations = useMemo(() => activationDurations(scopedSamples), [scopedSamples])
+  const timedCounts = useMemo(() => timedPluginCounts(scopedSamples), [scopedSamples])
   const slowest = useMemo(() => slowestBySelfTime(scopedSamples), [scopedSamples])
   const names = useMemo(
     () => snapshot === null ? new Map<string, string>() : namesByEntryId(snapshot.samples),
@@ -363,14 +552,72 @@ export function ProfilerSettingsTab({ readSnapshot, t }: ProfilerSettingsTabProp
         </div>
       ) : null}
 
-      {snapshot !== null ? (
+      {snapshot !== null && resolved ? (
         <>
+          <div className="dpp-verdict" data-tone={verdict.tone}>
+            <p className="dpp-verdict-text">{verdictText(verdict, t)}</p>
+            {snapshot.provenance.counts.builtin > 0 ? (
+              <p className="dpp-verdict-note">
+                {fill(t('verdictBuiltinNote'), { count: snapshot.provenance.counts.builtin })}
+              </p>
+            ) : null}
+          </div>
+
+          {userPlugins.length > 0 ? (
+            <div className="dpp-table-wrap">
+              <table className="dpp-table">
+                <thead>
+                  <tr>
+                    <th>{t('plugin')}</th>
+                    <th>{t('duration')}</th>
+                    <th>{t('outcome')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {userPlugins.map(sample => (
+                    <tr key={sample.runId}>
+                      <td><PluginName sample={sample} t={t} /></td>
+                      <td><SelfTimeValue sample={sample} t={t} /></td>
+                      <td>
+                        <span className="dpp-outcome" data-outcome={sample.outcome}>
+                          {t(OUTCOME_KEYS[sample.outcome])}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
+          <div className="dpp-expand">
+            <button
+              className="dpp-button"
+              type="button"
+              aria-expanded={expanded}
+              onClick={() => { setExpanded(value => !value) }}
+            >
+              {expanded
+                ? t('hideAll')
+                : t('showAll') + ' · ' + (originCounts === null ? 0 : originCounts.all)}
+            </button>
+          </div>
+        </>
+      ) : null}
+
+      {snapshot !== null && showAll ? (
+        <>
+          {resolved ? null : <p className="dpp-notice">{t('originUnavailable')}</p>}
+
           <div className="dpp-metrics">
             <div className="dpp-metric">
               <span className="dpp-metric-label">{t('measured')}</span>
               <strong className="dpp-metric-value">
-                {durations.length + '/' + scopedSamples.length}
+                {timedCounts.timed + '/' + timedCounts.total}
               </strong>
+              <span className="dpp-metric-note">
+                {fill(t('activationRuns'), { count: scopedSamples.length })}
+              </span>
             </div>
             <div className="dpp-metric">
               <span className="dpp-metric-label">{t('slowest')}</span>
@@ -398,9 +645,7 @@ export function ProfilerSettingsTab({ readSnapshot, t }: ProfilerSettingsTabProp
             </div>
           </div>
 
-          <p className="dpp-notice">{t('notice')}</p>
-
-          {snapshot.provenance.resolved && originCounts !== null ? (
+          {resolved && originCounts !== null ? (
             <div className="dpp-filters" role="group" aria-label={t('origin')}>
               {ORIGIN_FILTERS.filter(
                 filter => filter === 'all' || originCounts[filter] > 0,
@@ -418,7 +663,7 @@ export function ProfilerSettingsTab({ readSnapshot, t }: ProfilerSettingsTabProp
                 </button>
               ))}
             </div>
-          ) : <p className="dpp-notice">{t('originUnavailable')}</p>}
+          ) : null}
 
           <div className="dpp-toolbar">
             <input
@@ -465,24 +710,7 @@ export function ProfilerSettingsTab({ readSnapshot, t }: ProfilerSettingsTabProp
                 <tbody>
                   {visibleSamples.map(sample => (
                     <tr key={sample.runId} data-group={sample.isGroup ? 'true' : 'false'}>
-                      <td>
-                        <span className="dpp-plugin">
-                          <strong title={displayName(sample)}>
-                            <span className="dpp-name">{displayName(sample)}</span>
-                            {sample.isGroup
-                              ? <span className="dpp-tag" data-tag="group">{t('group')}</span>
-                              : null}
-                            {sample.generation > 1
-                              ? (
-                                <span className="dpp-tag" data-tag="reload" title={t('generation')}>
-                                  {t('reloaded') + ' ×' + sample.generation}
-                                </span>
-                              )
-                              : null}
-                          </strong>
-                          <code title={sample.entryId}>{sample.entryId}</code>
-                        </span>
-                      </td>
+                      <td><PluginName sample={sample} t={t} /></td>
                       <td>
                         <span className="dpp-origin" data-origin={sample.origin}>
                           {t(ORIGIN_KEYS[sample.origin])}

@@ -1,5 +1,10 @@
 import type { Dispose, LifecycleSource } from '../core/contracts.js'
-import type { DependencyLink, LifecycleSignal, LifecycleState } from '../core/types.js'
+import type {
+  DependencyLink,
+  LifecycleSignal,
+  LifecycleState,
+  LoaderEntryView,
+} from '../core/types.js'
 
 export const CORDIS_FIBER_STATE = {
   PENDING: 0,
@@ -19,6 +24,13 @@ interface CordisEntryLike {
     /** 条目自己声明的依赖;数组或 required/optional 结构。 */
     readonly inject?: unknown
   }
+  /** 这个条目当前的 Fiber;条目没跑起来时为 undefined。 */
+  readonly fiber?: CordisFiberLike
+}
+
+/** `ctx.loader` 的最小可用面:遍历本树及嵌套子树的全部条目。 */
+interface CordisLoaderLike {
+  entries(): Iterable<CordisEntryLike>
 }
 
 interface CordisFiberLike {
@@ -35,6 +47,8 @@ interface CordisFiberLike {
 export interface CordisContextLike {
   /** Loader 锚定在 Profile 目录上的 file URL;归属判定用它定位 Profile 清单。 */
   readonly baseUrl?: unknown
+  /** Loader 服务。没有它就只能靠事件流,而事件流看不见先启动完的插件。 */
+  readonly loader?: unknown
   on(
     event: 'internal/status',
     listener: (fiber: CordisFiberLike, previousState: unknown) => void,
@@ -113,6 +127,43 @@ export function readDependencies(fiber: CordisFiberLike): DependencyLink[] | und
     const providerEntryId = providerEntryIdOf(store?.[service])
     return providerEntryId === undefined ? { service } : { service, providerEntryId }
   })
+}
+
+/**
+ * 读一遍 Loader 名单。
+ *
+ * 这是知道"有谁在跑"的唯一办法:`internal/status` 只在状态变化时才发,先于 Profiler
+ * 启动完的插件早已停下不动,事件流里永远不会出现。
+ *
+ * 只收有活着 Fiber 的条目。名单上有、但没跑起来的(比如被禁用的)不属于这个工具的
+ * 范围——报告没运行过的东西会把它变成"已安装插件清单"。
+ */
+export function readLoaderEntries(ctx: CordisContextLike): LoaderEntryView[] {
+  const loader = ctx.loader
+  if (!isRecord(loader) || typeof loader['entries'] !== 'function') return []
+
+  const views: LoaderEntryView[] = []
+  try {
+    for (const entry of (loader as unknown as CordisLoaderLike).entries()) {
+      const entryId = nonEmptyString(entry.id)
+      const fiber = entry.fiber
+      if (entryId === undefined || fiber === undefined || fiber === null) continue
+
+      const moduleName = nonEmptyString(entry.options?.name)
+      const parentEntryId = nonEmptyString(fiber.parent?.fiber?.entry?.id)
+      views.push({
+        entryId,
+        isGroup: entry.options?.group === true,
+        state: mapCordisFiberState(fiber.state),
+        dependencies: readDependencies(fiber) ?? [],
+        ...(moduleName === undefined ? {} : { moduleName }),
+        ...(parentEntryId === undefined ? {} : { parentEntryId }),
+      })
+    }
+  } catch {
+    // 版本敏感面。读不到名单就退回"只有事件流"的行为,不能让 Host 挂掉。
+  }
+  return views
 }
 
 export function createCordisLifecycleSource(ctx: CordisContextLike): LifecycleSource {

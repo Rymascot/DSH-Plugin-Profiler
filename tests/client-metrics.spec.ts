@@ -2,12 +2,17 @@ import { describe, expect, it } from 'vitest'
 
 import {
   describeError,
+  fill,
   formatDuration,
+  latestByEntry,
   originFilterCounts,
   quantile,
   rankableSelfDuration,
   slowestBySelfTime,
   snapshotFileName,
+  timedPluginCounts,
+  untimedReasonKey,
+  userPluginVerdict,
 } from '../src/client/ProfilerSettingsTab.js'
 import {
   EXCLUDED_MEASUREMENTS,
@@ -17,19 +22,27 @@ import {
   type ProfilerSnapshot,
 } from '../src/core/types.js'
 
+interface SampleExtras {
+  readonly isGroup?: boolean
+  readonly outcome?: ActivationSample['outcome']
+  readonly generation?: number
+}
+
 function sampleWith(
   entryId: string,
   selfDurationMs: number | null,
-  isGroup = false,
+  extras: SampleExtras = {},
 ): ActivationSample {
+  const generation = extras.generation ?? 1
   return {
-    schemaVersion: 3,
-    runId: entryId + ':1',
+    schemaVersion: 4,
+    observation: 'lifecycle',
+    runId: entryId + ':' + generation,
     entryId,
     moduleName: 'dsh-' + entryId,
     origin: 'user',
-    generation: 1,
-    isGroup,
+    generation,
+    isGroup: extras.isGroup ?? false,
     dependencies: [],
     selfTime: {
       durationMs: selfDurationMs,
@@ -39,7 +52,7 @@ function sampleWith(
     firstSeenOffsetMs: 0,
     lastSeenOffsetMs: 1,
     lastState: 'active',
-    outcome: 'active',
+    outcome: extras.outcome ?? 'active',
     segments: {
       dependencyWait: {
         startOffsetMs: null,
@@ -98,7 +111,7 @@ describe('client performance metrics', () => {
 describe('最慢插件', () => {
   it('不让容器条目冒充最慢的插件', () => {
     const samples = [
-      sampleWith('bundle', 500, true),
+      sampleWith('bundle', 500, { isGroup: true }),
       sampleWith('fast', 40),
       sampleWith('slow', 120),
     ]
@@ -108,16 +121,134 @@ describe('最慢插件', () => {
   })
 
   it('没有可排名的条目时不给结论', () => {
-    expect(slowestBySelfTime([sampleWith('bundle', 500, true)])).toBeUndefined()
+    expect(slowestBySelfTime([sampleWith('bundle', 500, { isGroup: true })])).toBeUndefined()
     expect(slowestBySelfTime([sampleWith('unmeasured', null)])).toBeUndefined()
     expect(slowestBySelfTime([])).toBeUndefined()
+  })
+})
+
+describe('计数单位要一致', () => {
+  it('按插件数统计,不按记录数——旁边的筛选计数用的就是插件数', () => {
+    const samples = [
+      sampleWith('a', 4, { generation: 1 }),
+      sampleWith('a', 6, { generation: 2 }),
+      sampleWith('b', null),
+      sampleWith('c', 12),
+    ]
+
+    // 4 条记录,但只有 3 个插件;其中 2 个测到了耗时。
+    expect(timedPluginCounts(samples)).toEqual({ timed: 2, total: 3 })
+  })
+})
+
+describe('没有耗时的两种成因要分开解释', () => {
+  it('名单上补进来的和错过起点的,理由不一样', () => {
+    expect(untimedReasonKey(sampleWith('a', null))).toBe('untimedCensored')
+    expect(untimedReasonKey({ ...sampleWith('b', null), observation: 'enumerated' }))
+      .toBe('untimedRoster')
+  })
+})
+
+describe('文案占位符', () => {
+  it('填上已知的占位符,原样留下不认识的', () => {
+    expect(fill('你装的 {count} 个插件都正常，一共花了 {total}。', { count: 3, total: '12 ms' }))
+      .toBe('你装的 3 个插件都正常，一共花了 12 ms。')
+    expect(fill('{name} 启动失败了。', {})).toBe('{name} 启动失败了。')
+  })
+})
+
+describe('每个插件只看最近一次激活', () => {
+  it('保留代次最高的那条', () => {
+    const samples = [
+      sampleWith('a', 10, { generation: 1, outcome: 'failed' }),
+      sampleWith('a', 20, { generation: 2 }),
+      sampleWith('b', 30),
+    ]
+
+    expect(latestByEntry(samples).map(sample => [sample.entryId, sample.generation]))
+      .toEqual([['a', 2], ['b', 1]])
+  })
+})
+
+describe('给用户看的那句结论', () => {
+  it('一个插件都没有时不假装有', () => {
+    expect(userPluginVerdict([])).toEqual({
+      tone: 'none',
+      pluginCount: 0,
+      failedCount: 0,
+      unfinishedCount: 0,
+      timedCount: 0,
+      totalSelfMs: null,
+    })
+  })
+
+  it('一个都没测到耗时时,单独记下来——「都正常」不能听着像有数据', () => {
+    const verdict = userPluginVerdict([sampleWith('a', null), sampleWith('b', null)])
+
+    expect(verdict.tone).toBe('ok')
+    expect(verdict.pluginCount).toBe(2)
+    expect(verdict.timedCount).toBe(0)
+  })
+
+  it('全部正常且都测到耗时,就给出总和', () => {
+    const verdict = userPluginVerdict([sampleWith('a', 4), sampleWith('b', 8)])
+
+    expect(verdict.tone).toBe('ok')
+    expect(verdict.pluginCount).toBe(2)
+    expect(verdict.totalSelfMs).toBe(12)
+  })
+
+  it('有插件没测到耗时就不给总和,免得说小了', () => {
+    const verdict = userPluginVerdict([sampleWith('a', 4), sampleWith('b', null)])
+
+    expect(verdict.tone).toBe('ok')
+    expect(verdict.pluginCount).toBe(2)
+    expect(verdict.totalSelfMs).toBeNull()
+  })
+
+  it('只有一个出问题时给名字,多个时给数量', () => {
+    const one = userPluginVerdict([
+      sampleWith('a', 4),
+      sampleWith('b', 8, { outcome: 'failed' }),
+    ])
+    expect(one.tone).toBe('failed')
+    expect(one.onlyName).toBe('dsh-b')
+
+    const many = userPluginVerdict([
+      sampleWith('a', 4, { outcome: 'failed' }),
+      sampleWith('b', 8, { outcome: 'failed' }),
+    ])
+    expect(many.tone).toBe('failed')
+    expect(many.failedCount).toBe(2)
+    expect(many.onlyName).toBeUndefined()
+  })
+
+  it('失败比没跑完更要紧,先说失败', () => {
+    const verdict = userPluginVerdict([
+      sampleWith('a', 4, { outcome: 'in-progress' }),
+      sampleWith('b', 8, { outcome: 'failed' }),
+    ])
+
+    expect(verdict.tone).toBe('failed')
+    expect(verdict.unfinishedCount).toBe(1)
+  })
+
+  it('先失败后重载成功的插件算正常,不再报警', () => {
+    const verdict = userPluginVerdict([
+      sampleWith('a', 4, { generation: 1, outcome: 'failed' }),
+      sampleWith('a', 6, { generation: 2 }),
+    ])
+
+    expect(verdict.tone).toBe('ok')
+    expect(verdict.pluginCount).toBe(1)
+    expect(verdict.totalSelfMs).toBe(6)
   })
 })
 
 describe('归属筛选计数', () => {
   function snapshotWith(counts: ProfilerSnapshot['provenance']['counts']): ProfilerSnapshot {
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       provenance: { resolved: true, bundles: [], counts },
       collector: {
         mode: 'host-runtime',

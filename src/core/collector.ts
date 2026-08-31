@@ -1,6 +1,13 @@
 import { performance } from 'node:perf_hooks'
 
-import type { Clock, Dispose, LifecycleSource, SampleReporter } from './contracts.js'
+import {
+  noLoaderEntries,
+  type Clock,
+  type Dispose,
+  type LifecycleSource,
+  type LoaderEntrySource,
+  type SampleReporter,
+} from './contracts.js'
 import { unresolvedOriginIndex, type OriginIndex } from './provenance.js'
 import { ActivationStateMachine } from './state-machine.js'
 import type { ProfilerSnapshot } from './types.js'
@@ -14,6 +21,7 @@ export class ProfilerCollector {
   readonly #source: LifecycleSource
   readonly #clock: Clock
   readonly #reporter: SampleReporter | undefined
+  readonly #loader: LoaderEntrySource
   #attachedAtMonotonicMs = 0
   #lastOffsetMs = 0
   #disposeSource: Dispose | undefined
@@ -25,10 +33,12 @@ export class ProfilerCollector {
     clock: Clock = monotonicClock,
     reporter?: SampleReporter,
     origin: OriginIndex = unresolvedOriginIndex('未接入 Profile 清单。'),
+    loader: LoaderEntrySource = noLoaderEntries,
   ) {
     this.#source = source
     this.#clock = clock
     this.#reporter = reporter
+    this.#loader = loader
     this.#stateMachine = new ActivationStateMachine(origin)
   }
 
@@ -73,7 +83,11 @@ export class ProfilerCollector {
   }
 
   snapshot(): ProfilerSnapshot {
-    return this.#stateMachine.snapshot(this.#attachedAtMonotonicMs, this.#observedUntilOffsetMs())
+    return this.#stateMachine.snapshot(
+      this.#attachedAtMonotonicMs,
+      this.#observedUntilOffsetMs(),
+      this.#loader.entries(),
+    )
   }
 
   /** 读取观测窗口。与 `#readOffset` 不同,读快照不应推进时钟游标或产生诊断。 */
