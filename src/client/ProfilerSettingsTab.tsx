@@ -561,6 +561,12 @@ export function ProfilerSettingsTab({ readSnapshot, t }: ProfilerSettingsTabProp
                 {fill(t('verdictBuiltinNote'), { count: snapshot.provenance.counts.builtin })}
               </p>
             ) : null}
+            {/* 不提这批的话,「2 + 135」就凑不出筛选条上的总数,读得仔细的人立刻会发现。 */}
+            {snapshot.provenance.counts.unknown > 0 ? (
+              <p className="dpp-verdict-note">
+                {fill(t('verdictUnknownNote'), { count: snapshot.provenance.counts.unknown })}
+              </p>
+            ) : null}
           </div>
 
           {userPlugins.length > 0 ? (
@@ -637,11 +643,17 @@ export function ProfilerSettingsTab({ readSnapshot, t }: ProfilerSettingsTabProp
                 {scopedSamples.filter(sample => sample.outcome === 'failed').length}
               </strong>
             </div>
+            {/* 挂载时机解释了页面上大半个「无计时」:这段时间里发生的事全都没赶上。 */}
             <div className="dpp-metric">
-              <span className="dpp-metric-label">{t('window')}</span>
+              <span className="dpp-metric-label">{t('attachedAfter')}</span>
               <strong className="dpp-metric-value">
-                {formatDuration(snapshot.collector.observedUntilOffsetMs)}
+                {formatDuration(snapshot.collector.attachedAtMonotonicMs)}
               </strong>
+              <span className="dpp-metric-note">
+                {fill(t('observedFor'), {
+                  duration: formatDuration(snapshot.collector.observedUntilOffsetMs),
+                })}
+              </span>
             </div>
           </div>
 

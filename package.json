@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-profiler",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Runtime lifecycle profiler for DeepSeek Harness plugins.",
   "type": "module",
   "main": "./lib/index.js",
@@ -21,6 +21,10 @@
     "./types": {
       "types": "./lib/core/types.d.ts",
       "default": "./lib/core/types.js"
+    },
+    "./wire": {
+      "types": "./lib/wire/schema.d.ts",
+      "default": "./lib/wire/schema.js"
     },
     "./typert": {
       "types": "./lib/typert.host.d.ts",

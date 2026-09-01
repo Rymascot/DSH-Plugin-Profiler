@@ -24,7 +24,9 @@ export {
 } from './adapters/profile-manifest.js'
 export * from './core/index.js'
 export { ProfilerGateway } from './host/gateway.js'
-export { parseProfilerSnapshot, profilerSnapshotSchema } from './wire/schema.js'
+
+// 严格编解码器有意不从这里 re-export:它会把 zod 拖进 Host 的加载路径,而 Host 只
+// 产出快照、从不校验快照。校验是读取方的事,从 `dsh-plugin-profiler/wire` 拿。
 
 export const name = 'plugin-profiler'
 
